@@ -3,6 +3,11 @@
 Хранится в одном JSON-файле (docs/SPEC.md, раздел 9), запись атомарна
 (пишется во временный файл и переименовывается) — частично записанный файл
 не должен портить всю историю. Секреты сюда никогда не пишутся.
+
+С этапа 3 к одному экземпляру обращаются два потока одновременно: GUI-поток
+читает состояние для отображения, а фоновый поток планировщика
+(journal_automation/scheduler/core.py) читает и пишет результаты обработки —
+поэтому доступ защищён `threading.Lock` (docs/ARCHITECTURE.md §2).
 """
 
 from __future__ import annotations
@@ -10,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +51,7 @@ class HistoryRecord:
 class HistoryManager:
     def __init__(self, history_file: Path) -> None:
         self._path = history_file
+        self._lock = threading.Lock()
         self._records: dict[str, HistoryRecord] = {}
         self._load()
 
@@ -73,7 +80,8 @@ class HistoryManager:
             raise
 
     def get(self, session_id: str) -> HistoryRecord | None:
-        return self._records.get(session_id)
+        with self._lock:
+            return self._records.get(session_id)
 
     def was_successful(self, session_id: str) -> bool:
         record = self.get(session_id)
@@ -86,19 +94,21 @@ class HistoryManager:
         error_message: str | None = None,
         now: datetime | None = None,
     ) -> HistoryRecord:
-        previous = self._records.get(session_id)
-        attempt_count = (previous.attempt_count if previous else 0) + 1
-        timestamp = now or datetime.now(timezone.utc)
-        record = HistoryRecord(
-            session_id=session_id,
-            automation_state=automation_state,
-            updated_at=timestamp,
-            attempt_count=attempt_count,
-            error_message=error_message,
-        )
-        self._records[session_id] = record
-        self._save()
-        return record
+        with self._lock:
+            previous = self._records.get(session_id)
+            attempt_count = (previous.attempt_count if previous else 0) + 1
+            timestamp = now or datetime.now(timezone.utc)
+            record = HistoryRecord(
+                session_id=session_id,
+                automation_state=automation_state,
+                updated_at=timestamp,
+                attempt_count=attempt_count,
+                error_message=error_message,
+            )
+            self._records[session_id] = record
+            self._save()
+            return record
 
     def all(self) -> tuple[HistoryRecord, ...]:
-        return tuple(self._records.values())
+        with self._lock:
+            return tuple(self._records.values())

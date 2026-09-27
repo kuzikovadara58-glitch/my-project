@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,36 @@ import keyring
 import pytest
 import yaml
 from keyring.backend import KeyringBackend
+from PySide6.QtWidgets import QApplication
+
+
+@pytest.fixture(scope="session")
+def qapp() -> QApplication:
+    """Единственный на процесс экземпляр QApplication для Qt-тестов.
+
+    Не показывает никаких окон — нужен только для того, чтобы сигналы/слоты
+    и QThread работали (docs/PLAN.md, этап 3, раздел 26: тестируем
+    Controller/сигнальную интеграцию отдельно от визуального рендеринга).
+    """
+
+    app = QApplication.instance() or QApplication([])
+    return app
+
+
+def pump_events(app: QApplication, predicate, timeout: float = 5.0) -> bool:
+    """Крутит цикл событий Qt, пока `predicate()` не станет True или не выйдет
+
+    время — так фоновый QThread успевает доставить сигналы в тестовый процесс
+    без реального `app.exec()`.
+    """
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "timezone": "Europe/Moscow",

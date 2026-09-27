@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from journal_automation.app import build_training_service  # noqa: E402
+from journal_automation.app import build_app_context  # noqa: E402
 
 
 def _ensure_utf8_stdout() -> None:
@@ -26,7 +26,8 @@ def _ensure_utf8_stdout() -> None:
 
 def main() -> None:
     _ensure_utf8_stdout()
-    _config, training_service, _history = build_training_service()
+    context = build_app_context()
+    training_service = context.training_service
     sessions = training_service.get_sessions_for_today()
 
     if not sessions:
