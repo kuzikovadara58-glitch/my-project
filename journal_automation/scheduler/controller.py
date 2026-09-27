@@ -15,6 +15,9 @@ from PySide6.QtCore import QThread, Signal
 
 from journal_automation.automation.port import JournalAutomationPort
 from journal_automation.config.models import AutomationSettings
+from journal_automation.domain.session import TrainingSession
+from journal_automation.photos.presentation import format_photo_status
+from journal_automation.photos.service import PhotoService
 from journal_automation.scheduler.core import SchedulerEvent, SchedulerEventType, SchedulerLoop
 from journal_automation.services.history_manager import HistoryManager
 from journal_automation.services.time_service import TimeService
@@ -28,6 +31,7 @@ class AutomationController(QThread):
     event_logged = Signal(str)  # готовый текст для "Последнее событие"
     session_status_changed = Signal(str, str)  # session_id, временный текст статуса
     session_finished = Signal(str)  # session_id — забрать финальное состояние из истории
+    photo_status_changed = Signal(str, str)  # session_id, текст "Фото: ..." (этап 4, раздел 25)
 
     def __init__(
         self,
@@ -37,6 +41,8 @@ class AutomationController(QThread):
         time_service: TimeService,
         automation_settings: AutomationSettings,
         idle_poll_seconds: float = 30.0,
+        photo_service: PhotoService | None = None,
+        photo_recheck_seconds: float = 60.0,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -46,6 +52,8 @@ class AutomationController(QThread):
         self._time_service = time_service
         self._automation_settings = automation_settings
         self._idle_poll_seconds = idle_poll_seconds
+        self._photo_service = photo_service
+        self._photo_recheck_seconds = photo_recheck_seconds
         self._stop_event = threading.Event()
 
     def start_automation(self) -> None:
@@ -86,6 +94,8 @@ class AutomationController(QThread):
             stop_event=self._stop_event,
             on_event=self._handle_event,
             idle_poll_seconds=self._idle_poll_seconds,
+            photo_service=self._photo_service,
+            photo_recheck_seconds=self._photo_recheck_seconds,
         )
         loop.run()
         logger.info("Automation stopped")
@@ -105,3 +115,27 @@ class AutomationController(QThread):
             self.session_status_changed.emit(event.session_id, "🔵 Выполняется")
         elif event.type is SchedulerEventType.PROCESSING_FINISHED and event.session_id:
             self.session_finished.emit(event.session_id)
+        elif event.type is SchedulerEventType.PHOTO_CHECKING and event.session_id:
+            self.photo_status_changed.emit(event.session_id, "Фото: 🔄 проверяется...")
+        elif event.type is SchedulerEventType.PHOTO_STATUS and event.session_id:
+            self.photo_status_changed.emit(event.session_id, f"Фото: {event.message}")
+
+
+class PhotoCheckWorker(QThread):
+    """Одноразовая проверка фото по нажатию кнопки «Проверить фото» (раздел 26).
+
+    Отдельный лёгкий поток, а не переиспользование `AutomationController` —
+    работает независимо от того, запущена ли автоматизация, и не блокирует
+    GUI (Google Drive API — блокирующий сетевой вызов).
+    """
+
+    result_ready = Signal(str, str)  # session_id, готовый текст "Фото: ..."
+
+    def __init__(self, photo_service: PhotoService, session: TrainingSession, parent=None) -> None:
+        super().__init__(parent)
+        self._photo_service = photo_service
+        self._session = session
+
+    def run(self) -> None:
+        result = self._photo_service.get_photo_for_session(self._session)
+        self.result_ready.emit(self._session.session_id, f"Фото: {format_photo_status(result)}")

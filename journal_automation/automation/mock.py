@@ -8,11 +8,15 @@ docs/SPEC.md, этап 3, раздел 15: "На этом этапе реаль�
 
 from __future__ import annotations
 
+import logging
 import threading
 
 from journal_automation.automation.port import ProcessResult
 from journal_automation.domain.session import TrainingSession
 from journal_automation.domain.states import AutomationState
+from journal_automation.photos.models import TrainingPhoto
+
+logger = logging.getLogger(__name__)
 
 # Шаги имитации: "проверка данных" -> "имитация работы". Число шагов и
 # задержка между ними — только для визуальной демонстрации процесса
@@ -26,8 +30,14 @@ class MockJournalAutomation:
         self._step_delay_seconds = step_delay_seconds
 
     def process_session(
-        self, session: TrainingSession, stop_event: threading.Event
+        self,
+        session: TrainingSession,
+        stop_event: threading.Event,
+        photo: TrainingPhoto | None = None,
     ) -> ProcessResult | None:
+        if photo is not None:
+            logger.debug("Mock automation: используется фото %s", photo.remote_name)
+
         for _ in range(_STEPS):
             if stop_event.wait(self._step_delay_seconds):
                 return None  # остановлено до завершения — не SUCCESS и не ERROR

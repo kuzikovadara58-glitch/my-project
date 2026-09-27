@@ -60,7 +60,7 @@ class FakeAutomationPort:
         self.calls: list[str] = []
 
     def process_session(
-        self, session: TrainingSession, stop_event: threading.Event
+        self, session: TrainingSession, stop_event: threading.Event, photo=None
     ) -> ProcessResult | None:
         self.calls.append(session.session_id)
         if not self._results:

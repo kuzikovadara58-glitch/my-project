@@ -9,3 +9,9 @@ tzdata==2026.4
 platformdirs==4.12.0
 keyring==25.7.0
 pytest==9.1.1
+
+# Этап 4: источник фотографий Google Drive + чтение EXIF
+Pillow==12.3.0
+google-api-python-client==2.200.0
+google-auth-httplib2==0.4.2
+google-auth-oauthlib==1.4.1

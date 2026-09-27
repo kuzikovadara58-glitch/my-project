@@ -28,8 +28,14 @@ from journal_automation.config.models import (
     AttendanceSourceEntry,
     AutomationSettings,
     Group,
+    GoogleDriveSettings,
     PathsSettings,
+    PhotosSettings,
     TrainingSchedule,
+)
+from journal_automation.photos.google_drive_url import (
+    InvalidGoogleDriveFolderReference,
+    extract_folder_id,
 )
 
 
@@ -130,7 +136,47 @@ class ConfigManager:
             logs=paths_raw.get("logs", "logs"),
         )
 
-        return AppConfig(timezone=timezone_name, automation=automation, paths=paths)
+        photos = self._load_photos_settings(data.get("photos") or {})
+
+        return AppConfig(timezone=timezone_name, automation=automation, paths=paths, photos=photos)
+
+    def _load_photos_settings(self, photos_raw: dict) -> PhotosSettings:
+        drive_raw = photos_raw.get("google_drive") or {}
+        folder_url = str(drive_raw.get("folder_url", "") or "")
+        folder_id_raw = str(drive_raw.get("folder_id", "") or "")
+
+        # Пустая ссылка/id — ожидаемое состояние, пока пользователь не
+        # предоставил постоянную папку (docs/SPEC.md, этап 4, раздел 39).
+        # Но если что-то указано — оно должно быть разбираемым уже сейчас,
+        # а не падать позже посреди работы планировщика.
+        for label, value in (("folder_url", folder_url), ("folder_id", folder_id_raw)):
+            if value:
+                try:
+                    extract_folder_id(value)
+                except InvalidGoogleDriveFolderReference as exc:
+                    raise ConfigError(
+                        f"settings.yaml: photos.google_drive.{label} некорректен: {exc}"
+                    ) from exc
+
+        google_drive = GoogleDriveSettings(folder_url=folder_url, folder_id=folder_id_raw)
+
+        try:
+            return PhotosSettings(
+                source=photos_raw.get("source", "google_drive"),
+                google_drive=google_drive,
+                allow_drive_timestamp_fallback=bool(
+                    photos_raw.get("allow_drive_timestamp_fallback", False)
+                ),
+                time_tolerance_before_minutes=photos_raw.get("time_tolerance_before_minutes", 15),
+                time_tolerance_after_minutes=photos_raw.get("time_tolerance_after_minutes", 120),
+                wait_for_photo_until_minutes_after_end=photos_raw.get(
+                    "wait_for_photo_until_minutes_after_end", 30
+                ),
+                recheck_interval_seconds=photos_raw.get("recheck_interval_seconds", 60),
+                cache_retention_days=photos_raw.get("cache_retention_days", 7),
+            )
+        except ValueError as exc:
+            raise ConfigError(f"settings.yaml: некорректный раздел photos: {exc}") from exc
 
     # -- absence_reasons.yaml ----------------------------------------------
 

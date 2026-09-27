@@ -7,7 +7,9 @@ from journal_automation.config.models import (
     AutomationSettings,
     Athlete,
     Group,
+    GoogleDriveSettings,
     PathsSettings,
+    PhotosSettings,
     TrainingSchedule,
 )
 
@@ -22,6 +24,8 @@ __all__ = [
     "AutomationSettings",
     "Athlete",
     "Group",
+    "GoogleDriveSettings",
     "PathsSettings",
+    "PhotosSettings",
     "TrainingSchedule",
 ]

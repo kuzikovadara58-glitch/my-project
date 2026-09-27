@@ -265,6 +265,62 @@ N минут, по умолчанию — конец + 10 минут).
 > MockJournalAutomation` — реализация для этапа 3, ничего не пишет ни в
 > какой реальный журнал (docs/SPEC.md, этап 3, раздел 15).
 
+> Реализовано на этапе 4: добавлен параллельный источник данных для
+> `process_session` — `photo: TrainingPhoto | None`, третий (опциональный,
+> с default `None`) параметр `JournalAutomationPort.process_session`, не
+> ломающий совместимость с этапом 3. Перед вызовом автоматизации
+> `SchedulerLoop` (`journal_automation/scheduler/core.py`) опционально
+> обращается к `PhotoService`:
+>
+> ```text
+> TrainingSession
+>       ↓
+> PhotoService (journal_automation/photos/service.py)
+>       ↓
+> PhotoSource (journal_automation/photos/source.py, Protocol)
+>       ↓
+> GoogleDrivePhotoSource  (реальный, этап 4)
+> FakeGoogleDrivePhotoSource (demo, этап 4)
+> LocalPhotoSource  (задел на будущее — не реализован, PhotoService его не
+>                     потребует менять при добавлении)
+> ```
+>
+> `PhotoService` не скачивает всю папку Google Drive: сначала получает только
+> метаданные (`list_candidates`), дёшево отсеивает по имени файла кандидатов
+> с явно другой датой (без скачивания), и лишь узкий остаток (не больше
+> `_MAX_CANDIDATES_TO_DOWNLOAD`) реально скачивает, чтобы проверить EXIF.
+> Источник времени съёмки — приоритет EXIF → имя файла → (только если явно
+> разрешено `photos.allow_drive_timestamp_fallback`) метаданные Drive; сами
+> метаданные/EXIF/имя файла никогда не изменяются ради совпадения
+> (docs/SPEC.md, этап 4, раздел 18).
+>
+> Результат подбора — `PhotoSelectionStatus`: `FOUND`, `WAITING_FOR_PHOTO`
+> (занятие ещё может получить фото — планировщик ждёт `recheck_interval_seconds`
+> и проверяет снова, не считая это попыткой обработки), `NOT_FOUND`,
+> `SOURCE_UNAVAILABLE`, `AMBIGUOUS`. Всё, кроме `FOUND` и `WAITING_FOR_PHOTO`,
+> терминально для текущего запуска автоматизации и записывается в историю как
+> `NEEDS_ATTENTION` — доменное правило "нет валидного фото → нет финального
+> заполнения журнала" (docs/SPEC.md, этап 4, раздел 29) реализовано здесь, а
+> не в самом адаптере сайта, поэтому применится одинаково и когда адаптер
+> станет реальным (этапы 5-6).
+>
+> Эта сущность (`TrainingPhoto`, `journal_automation/photos/models.py`) — не
+> дублирует `PhotoCandidate`/`PhotoValidationState` из §12 этапа 2: та пара
+> отвечает за финальную проверку уже выбранного файла непосредственно перед
+> загрузкой на сайт (пригодится на этапе 6), а `TrainingPhoto` — за то, откуда
+> фото вообще берётся и как выбирается среди кандидатов Google Drive. Слои
+> дополняют друг друга.
+>
+> Авторизация — OAuth 2.0 "installed app" flow
+> (`journal_automation/photos/google_drive_auth.py`,
+> `InstalledAppFlow.run_local_server`) — рекомендованный Google механизм для
+> десктопных приложений одного пользователя; пароль от Google-аккаунта
+> приложение никогда не получает. `credentials.json` (OAuth client secret) и
+> `token.json` не создаются этим кодом и не коммитятся (`.gitignore`).
+> OAuth-вход запускается лениво — только когда реальная папка Google Drive
+> настроена (`photos.google_drive.folder_url` не пуст), не при обычном
+> запуске с настройками-плейсхолдерами по умолчанию.
+
 ## 6. Хранение данных
 
 > Реализовано на этапе 2 (частично): `journal_automation/paths.py`
@@ -275,7 +331,14 @@ N минут, по умолчанию — конец + 10 минут).
 > `platformdirs`, не рядом с программой). История выполнения на этапе 2 —
 > один JSON-файл через `journal_automation/services/history_manager.py`;
 > переход на SQLite (см. ниже) состоится, когда к данным потребуется
-> конкурентный доступ планировщика и GUI (этапы 3–4).
+> конкурентный доступ планировщика и GUI (этапы 3–4). Этап 4 добавил ещё
+> один временный каталог того же пользовательского корня —
+> `<user_data_root>/cache/photos/` (`journal_automation/photos/cache.py:
+> PhotoCache`) — скачанные из Google Drive файлы, не постоянное хранилище
+> (раздел 9 этапа 4); отдельно от `photos/` из `PathsSettings`, которая
+> зарезервирована под будущий `LocalPhotoSource`. `HistoryManager` теперь
+> читается/пишется из двух потоков сразу (GUI и Worker) — защищён
+> `threading.Lock` (этап 3).
 
 - **SQLite** — единственный источник истины во время работы приложения:
   группы, спортсмены, расписание, занятия и их состояния, посещаемость,

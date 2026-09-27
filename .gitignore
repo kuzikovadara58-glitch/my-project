@@ -1,7 +1,10 @@
 # --- Виртуальное окружение и Python-артефакты ---
-venv/
-.venv/
-env/
+# С ведущим "/" — привязано к корню репозитория, чтобы случайно не
+# скрыть одноимённый каталог внутри пакета (см. историю бага с "photos/"
+# ниже, который прятал весь journal_automation/photos/).
+/venv/
+/.venv/
+/env/
 __pycache__/
 *.pyc
 *.pyo
@@ -17,6 +20,18 @@ __pycache__/
 secrets.yaml
 credentials.json
 
+# --- Google Drive OAuth (этап 4) ---
+# credentials.json — OAuth client secret из Google Cloud Console;
+# token.json — access/refresh token после входа. Ни то, ни другое не
+# создаётся и не читается этим репозиторием напрямую по этим именам (пути
+# настраиваются в journal_automation/photos/bootstrap.py), но исключаем и
+# распространённые варианты имён на случай, если разработчик положит их
+# рядом с проектом при локальной проверке.
+credentials*.json
+token*.json
+google_drive_credentials.json
+google_drive_token.json
+
 # --- Сессии и авторизация браузера (Playwright) ---
 storage_state.json
 *.session
@@ -26,20 +41,28 @@ storage_state.json
 # База данных, реальные фотографии, реальные списки спортсменов и локальные
 # конфиги хранятся отдельно от установленной программы и никогда не попадают
 # в репозиторий. В репозитории допустимы только examples/ с вымышленными данными.
-data/
-user_data/
+# data/cache/photos/ (временный кэш скачанных из Google Drive фото, этап 4)
+# уже покрывается шаблоном /data/ ниже.
+#
+# ВАЖНО: все шаблоны в этом разделе — с ведущим "/" (привязаны к корню
+# репозитория). Без него "photos/" совпал бы и с пакетом
+# journal_automation/photos/ — так уже случилось на этапе 4: пакет молча не
+# попадал в git status, пока это не обнаружили и не исправили здесь.
+/data/
+/user_data/
 *.db
 *.db-journal
 *.sqlite
 *.sqlite3
-photos/
-media/
+/photos/
+/media/
 config/local.yaml
 config/real_*.yaml
+/.gdrive_integration_cache/
 
 # --- Логи и диагностика ---
 # Могут содержать персональные данные (ФИО спортсменов, фрагменты страниц журнала).
-logs/
+/logs/
 *.log
 diagnostics/
 screenshots/
@@ -48,8 +71,8 @@ playwright-report/
 test-results/
 
 # --- Сборка и дистрибутив ---
-build/
-dist/
+/build/
+/dist/
 
 # --- IDE и инструменты ---
 .idea/

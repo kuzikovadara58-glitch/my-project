@@ -23,6 +23,9 @@ from journal_automation.automation.port import JournalAutomationPort
 from journal_automation.config.models import AutomationSettings
 from journal_automation.domain.session import TrainingSession
 from journal_automation.domain.states import AutomationState
+from journal_automation.photos.models import PhotoSelectionStatus
+from journal_automation.photos.presentation import format_photo_status
+from journal_automation.photos.service import PhotoService
 from journal_automation.scheduler.timing import compute_fill_time
 from journal_automation.services.history_manager import HistoryManager
 from journal_automation.services.time_service import TimeService
@@ -38,6 +41,8 @@ class SchedulerEventType(str, Enum):
     PROCESSING_STARTED = "processing_started"
     PROCESSING_FINISHED = "processing_finished"
     STOPPED = "stopped"
+    PHOTO_CHECKING = "photo_checking"  # запрос к источнику фото начат
+    PHOTO_STATUS = "photo_status"  # готовый текст результата (docs/SPEC.md, этап 4, раздел 25)
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,11 @@ class SchedulerEvent:
     type: SchedulerEventType
     session_id: str | None = None
     message: str = ""
+
+
+# Внутренние сигнальные значения для _check_photo — не часть публичного API.
+_WAITING_FOR_PHOTO = object()
+_PHOTO_UNRESOLVED = object()
 
 
 class SchedulerLoop:
@@ -58,6 +68,8 @@ class SchedulerLoop:
         stop_event: threading.Event,
         on_event: Callable[[SchedulerEvent], None] | None = None,
         idle_poll_seconds: float = 30.0,
+        photo_service: PhotoService | None = None,
+        photo_recheck_seconds: float = 60.0,
     ) -> None:
         self._training_service = training_service
         self._history = history
@@ -67,6 +79,10 @@ class SchedulerLoop:
         self._stop_event = stop_event
         self._on_event = on_event or (lambda event: None)
         self._idle_poll_seconds = idle_poll_seconds
+        # Опционально: пока источник фото не настроен (этап 4), поведение
+        # полностью совпадает с этапом 3 — фото не проверяется вовсе.
+        self._photo_service = photo_service
+        self._photo_recheck_seconds = photo_recheck_seconds
         # Защита от штормового авто-повтора ERROR/NEEDS_ATTENTION в рамках
         # ОДНОГО запуска автоматизации: контролируемый повтор (docs/SPEC.md,
         # раздел 9-10) означает "можно попробовать снова при следующем
@@ -119,6 +135,14 @@ class SchedulerLoop:
         return min(candidates, key=lambda pair: pair[1])
 
     def _process(self, session: TrainingSession) -> None:
+        photo = None
+        if self._photo_service is not None:
+            photo = self._check_photo(session)
+            if photo is _WAITING_FOR_PHOTO:
+                return  # не в attempted_this_run — попробуем снова после паузы
+            if photo is _PHOTO_UNRESOLVED:
+                return  # уже записано в историю как NEEDS_ATTENTION внутри _check_photo
+
         logger.info("Session processing started: %s", session.session_id)
         self._emit(
             SchedulerEventType.PROCESSING_STARTED,
@@ -126,7 +150,7 @@ class SchedulerLoop:
             f"начата обработка: {session.group.name}",
         )
 
-        result = self._automation_port.process_session(session, self._stop_event)
+        result = self._automation_port.process_session(session, self._stop_event, photo)
         self._attempted_this_run.add(session.session_id)
 
         if result is None:
@@ -147,6 +171,50 @@ class SchedulerLoop:
             session.session_id,
             f"{session.group.name}: {result.state.value}",
         )
+
+    def _check_photo(self, session: TrainingSession):
+        """Возвращает `TrainingPhoto`, либо один из внутренних сигналов:
+
+        `_WAITING_FOR_PHOTO` — фото ещё может появиться, ждём и проверим
+        занятие снова (кооперативно, через `stop_event.wait`), не считая
+        это попыткой обработки. `_PHOTO_UNRESOLVED` — фото не найдено /
+        источник недоступен / несколько кандидатов без возможности выбрать
+        однозначно; занятие переведено в `NEEDS_ATTENTION` (docs/SPEC.md,
+        этап 4, разделы 21-22, 29: "нет валидного фото -> нет финального
+        заполнения журнала").
+        """
+
+        self._emit(SchedulerEventType.PHOTO_CHECKING, session.session_id, "проверяется...")
+        result = self._photo_service.get_photo_for_session(session)
+        photo_status_text = format_photo_status(result)
+        self._emit(SchedulerEventType.PHOTO_STATUS, session.session_id, photo_status_text)
+
+        if result.status is PhotoSelectionStatus.FOUND:
+            return result.photo
+
+        if result.status is PhotoSelectionStatus.WAITING_FOR_PHOTO:
+            logger.info("Session waiting for photo: %s", session.session_id)
+            self._emit(
+                SchedulerEventType.WAITING,
+                session.session_id,
+                f"{session.group.name}: ожидание фото ({result.message})",
+            )
+            self._stop_event.wait(self._photo_recheck_seconds)
+            return _WAITING_FOR_PHOTO
+
+        # NOT_FOUND / SOURCE_UNAVAILABLE / AMBIGUOUS — терминально для этого запуска.
+        self._attempted_this_run.add(session.session_id)
+        message = f"фото: {result.message}"
+        logger.warning("Session processing failed (photo): %s (%s)", session.session_id, message)
+        self._history.record_attempt(
+            session.session_id, AutomationState.NEEDS_ATTENTION, error_message=message
+        )
+        self._emit(
+            SchedulerEventType.PROCESSING_FINISHED,
+            session.session_id,
+            f"{session.group.name}: {message}",
+        )
+        return _PHOTO_UNRESOLVED
 
     def _emit(
         self, event_type: SchedulerEventType, session_id: str | None = None, message: str = ""

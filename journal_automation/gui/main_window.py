@@ -1,20 +1,21 @@
-"""Главный экран (docs/PLAN.md, этап 3).
+"""Главный экран (docs/PLAN.md, этапы 3-4).
 
-GUI не хранит расписание сам и не знает про сайт журнала — только читает
-`TrainingService` (этап 2) и получает обновления от `AutomationController`
-через сигналы (docs/ARCHITECTURE.md §2): виджеты никогда не трогаются из
-фонового потока напрямую.
+GUI не хранит расписание сам и не знает про сайт журнала или Google Drive —
+только читает `TrainingService` (этап 2) и `PhotoService` (этап 4) и получает
+обновления от `AutomationController` через сигналы (docs/ARCHITECTURE.md §2):
+виджеты никогда не трогаются из фонового потока напрямую.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
-    QListWidget,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -22,7 +23,8 @@ from PySide6.QtWidgets import (
 from journal_automation.config.manager import LoadedConfig
 from journal_automation.domain.session import TrainingSession
 from journal_automation.domain.states import AutomationState
-from journal_automation.scheduler.controller import AutomationController
+from journal_automation.photos.service import PhotoService
+from journal_automation.scheduler.controller import AutomationController, PhotoCheckWorker
 from journal_automation.services.time_service import TimeService
 from journal_automation.services.training_service import TrainingService
 
@@ -46,6 +48,7 @@ class MainWindow(QWidget):
         controller: AutomationController,
         config: LoadedConfig,
         time_service: TimeService,
+        photo_service: PhotoService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -53,8 +56,14 @@ class MainWindow(QWidget):
         self.controller = controller
         self.config = config
         self.time_service = time_service
+        self.photo_service = photo_service
 
         self._live_overrides: dict[str, str] = {}
+        self._photo_status_by_session: dict[str, str] = {}
+        self._sessions_by_id: dict[str, TrainingSession] = {}
+        # Ссылки на активные PhotoCheckWorker — без этого Python может собрать
+        # объект потока до завершения run() (раздел 26).
+        self._photo_workers: set[PhotoCheckWorker] = set()
 
         self.setWindowTitle("Электронный журнал — автоматизация")
         self._build_ui()
@@ -82,8 +91,15 @@ class MainWindow(QWidget):
         layout.addWidget(self.status_label)
 
         layout.addWidget(QLabel("Тренировки сегодня"))
-        self.session_list = QListWidget()
-        layout.addWidget(self.session_list)
+
+        self._sessions_layout = QVBoxLayout()
+        sessions_container = QWidget()
+        sessions_container.setLayout(self._sessions_layout)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(sessions_container)
+        scroll_area.setMinimumHeight(160)
+        layout.addWidget(scroll_area)
 
         self.next_label = QLabel("")
         layout.addWidget(self.next_label)
@@ -110,6 +126,7 @@ class MainWindow(QWidget):
         self.controller.event_logged.connect(self._on_event_logged)
         self.controller.session_status_changed.connect(self._on_session_status_changed)
         self.controller.session_finished.connect(self._on_session_finished)
+        self.controller.photo_status_changed.connect(self._on_photo_status_changed)
 
     # -- обработчики кнопок ------------------------------------------------
 
@@ -121,17 +138,33 @@ class MainWindow(QWidget):
 
     def _on_settings_clicked(self) -> None:
         automation = self.config.app.automation
+        photos = self.config.app.photos
         fill_mode = (
             f"через {automation.fill_after_start_minutes} мин. после начала"
             if automation.fill_after_start_minutes is not None
             else f"через {automation.fill_after_end_minutes} мин. после окончания"
         )
+        drive_reference = photos.google_drive.folder_url or photos.google_drive.folder_id or "(не настроено)"
         text = (
             f"Часовой пояс: {self.config.app.timezone}\n"
-            f"Папка с фото: {self.config.app.paths.photos}\n"
-            f"Момент заполнения: {fill_mode}"
+            f"Момент заполнения: {fill_mode}\n"
+            f"Источник фото: {photos.source}\n"
+            f"Папка Google Drive: {drive_reference}"
         )
         QMessageBox.information(self, "Настройки (только просмотр)", text)
+
+    def _on_check_photo_clicked(self, session_id: str) -> None:
+        session = self._sessions_by_id.get(session_id)
+        if session is None or self.photo_service is None:
+            return
+        self._photo_status_by_session[session_id] = "Фото: 🔄 проверяется..."
+        self._refresh_sessions()
+
+        worker = PhotoCheckWorker(self.photo_service, session, parent=self)
+        worker.result_ready.connect(self._on_photo_status_changed)
+        worker.finished.connect(lambda w=worker: self._photo_workers.discard(w))
+        self._photo_workers.add(worker)
+        worker.start()
 
     # -- обработчики сигналов контроллера -----------------------------------
 
@@ -155,24 +188,57 @@ class MainWindow(QWidget):
         self._live_overrides.pop(session_id, None)
         self._refresh_sessions()
 
+    def _on_photo_status_changed(self, session_id: str, status_text: str) -> None:
+        self._photo_status_by_session[session_id] = status_text
+        self._refresh_sessions()
+
     # -- отрисовка списка занятий -------------------------------------------
 
     def _refresh_sessions(self) -> None:
         sessions = self.training_service.get_sessions_for_today()
-        self.session_list.clear()
+        self._sessions_by_id = {s.session_id: s for s in sessions}
+
+        while self._sessions_layout.count():
+            item = self._sessions_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
         if not sessions:
-            self.session_list.addItem("Сегодня тренировок нет.")
+            self._sessions_layout.addWidget(QLabel("Сегодня тренировок нет."))
         else:
             for session in sessions:
-                self.session_list.addItem(self._render_session_text(session))
+                self._sessions_layout.addWidget(self._build_session_row(session))
+
         self._update_next_session_label(sessions)
 
-    def _render_session_text(self, session: TrainingSession) -> str:
-        override = self._live_overrides.get(session.session_id)
-        status = override or AUTOMATION_STATUS_LABELS.get(
+    def _build_session_row(self, session: TrainingSession) -> QWidget:
+        row = QFrame()
+        row.setFrameShape(QFrame.Shape.StyledPanel)
+        row_layout = QVBoxLayout(row)
+
+        header = QLabel(f"{session.start_time:%H:%M}-{session.end_time:%H:%M}  {session.group.name}")
+        row_layout.addWidget(header)
+
+        status_override = self._live_overrides.get(session.session_id)
+        status_text = status_override or AUTOMATION_STATUS_LABELS.get(
             session.automation_state, session.automation_state.value
         )
-        return f"{session.start_time:%H:%M}-{session.end_time:%H:%M}  {session.group.name}\n{status}"
+        row_layout.addWidget(QLabel(status_text))
+
+        if self.photo_service is not None:
+            photo_row = QHBoxLayout()
+            photo_text = self._photo_status_by_session.get(session.session_id, "Фото: проверяется...")
+            photo_row.addWidget(QLabel(photo_text))
+
+            check_button = QPushButton("🔄 Проверить фото")
+            check_button.clicked.connect(
+                lambda _checked=False, sid=session.session_id: self._on_check_photo_clicked(sid)
+            )
+            photo_row.addWidget(check_button)
+            row_layout.addLayout(photo_row)
+
+        return row
 
     def _update_next_session_label(self, sessions: list[TrainingSession]) -> None:
         pending = [
@@ -188,4 +254,6 @@ class MainWindow(QWidget):
 
     def closeEvent(self, event) -> None:  # noqa: N802 (имя метода задано Qt)
         self.controller.shutdown()
+        for worker in list(self._photo_workers):
+            worker.wait(1000)
         super().closeEvent(event)

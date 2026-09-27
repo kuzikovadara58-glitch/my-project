@@ -93,10 +93,53 @@ class AutomationSettings:
 
 
 @dataclass(frozen=True)
+class GoogleDriveSettings:
+    """Ссылка на постоянную папку с фото (docs/SPEC.md, этап 4, раздел 4).
+
+    Ровно одно из полей заполняется пользователем — `folder_url` (обычная
+    ссылка Google Drive) предпочтительнее `folder_id`. До того как ссылка
+    предоставлена, оба поля — пустые строки, это ожидаемое, а не ошибочное
+    состояние (этап 4, раздел 39).
+    """
+
+    folder_url: str = ""
+    folder_id: str = ""
+
+
+@dataclass(frozen=True)
+class PhotosSettings:
+    """Настройки источника фотографий (docs/SPEC.md, этап 4)."""
+
+    source: str = "google_drive"  # "google_drive" | "local" (LocalPhotoSource — задел на будущее)
+    google_drive: GoogleDriveSettings = field(default_factory=GoogleDriveSettings)
+    allow_drive_timestamp_fallback: bool = False
+    time_tolerance_before_minutes: int = 15
+    time_tolerance_after_minutes: int = 120
+    wait_for_photo_until_minutes_after_end: int = 30
+    recheck_interval_seconds: int = 60
+    cache_retention_days: int = 7
+
+    def __post_init__(self) -> None:
+        if self.source not in ("google_drive", "local"):
+            raise ValueError(f"photos.source: неизвестный источник '{self.source}'")
+        for name in (
+            "time_tolerance_before_minutes",
+            "time_tolerance_after_minutes",
+            "wait_for_photo_until_minutes_after_end",
+            "recheck_interval_seconds",
+            "cache_retention_days",
+        ):
+            value = getattr(self, name)
+            if value < 0:
+                raise ValueError(f"photos.{name} не может быть отрицательным: {value}")
+
+
+@dataclass(frozen=True)
 class AppConfig:
     timezone: str
     automation: AutomationSettings
     paths: PathsSettings
+    photos: PhotosSettings = field(default_factory=PhotosSettings)
 
 
 @dataclass(frozen=True)

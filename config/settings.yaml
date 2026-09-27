@@ -21,3 +21,31 @@ paths:
   photos: "photos"
   data: "data"
   logs: "logs"
+
+# Источник фотографий (этап 4). Пока folder_url пуст — источник фото
+# отключён, планировщик работает без проверки фото, как на этапе 3. См.
+# README.md, раздел "Google Drive — фотографии", для настройки.
+photos:
+  source: "google_drive"
+
+  google_drive:
+    # Обычная ссылка на папку Google Drive, например
+    # https://drive.google.com/drive/folders/<id> — вставляется сюда позже.
+    folder_url: ""
+    # Альтернатива folder_url — просто идентификатор папки, если ссылки нет.
+    folder_id: ""
+
+  # Раздел 13: EXIF/имя файла — надёжные источники времени съёмки, метаданные
+  # Google Drive (createdTime/modifiedTime) — нет. По умолчанию не используются.
+  allow_drive_timestamp_fallback: false
+
+  time_tolerance_before_minutes: 15
+  time_tolerance_after_minutes: 120
+
+  # Сколько минут после окончания занятия ждать появления фото в Google
+  # Drive, прежде чем считать его отсутствующим (раздел 28).
+  wait_for_photo_until_minutes_after_end: 30
+  # Как часто повторно опрашивать Google Drive, пока фото не найдено.
+  recheck_interval_seconds: 60
+  # Сколько дней хранить временно скачанные фото в локальном кэше.
+  cache_retention_days: 7
