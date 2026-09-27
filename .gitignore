@@ -12,6 +12,7 @@ __pycache__/
 # .env допустим исключительно для локальной разработки и никогда не коммитится.
 .env
 .env.*
+!.env.example
 *.secret
 secrets.yaml
 credentials.json

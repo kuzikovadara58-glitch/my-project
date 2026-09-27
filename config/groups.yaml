@@ -1,0 +1,43 @@
+# Пример состава групп. Данные вымышленные — используются для разработки
+# и демонстрации без реальных спортсменов. journal_group_id пуст, пока
+# реальный сайт журнала не изучен (см. docs/ARCHITECTURE.md, открытые вопросы).
+
+groups:
+  - id: "kids_1"
+    name: "Детская группа №1"
+    journal_group_id: ""
+    schedule:
+      - weekday: "monday"
+        start: "18:00"
+        end: "19:30"
+      - weekday: "wednesday"
+        start: "18:00"
+        end: "19:30"
+    athletes:
+      - id: "athlete_1"
+        full_name: "Спортсмен Один"
+        gender: "m"
+      - id: "athlete_2"
+        full_name: "Спортсмен Два"
+        gender: "m"
+      - id: "athlete_3"
+        full_name: "Спортсменка Три"
+        gender: "f"
+
+  - id: "kids_2"
+    name: "Детская группа №2"
+    journal_group_id: ""
+    schedule:
+      - weekday: "tuesday"
+        start: "17:00"
+        end: "18:00"
+      - weekday: "thursday"
+        start: "17:00"
+        end: "18:00"
+    athletes:
+      - id: "athlete_4"
+        full_name: "Спортсмен Четыре"
+        gender: "m"
+      - id: "athlete_5"
+        full_name: "Спортсменка Пять"
+        gender: "f"
